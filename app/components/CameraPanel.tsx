@@ -40,10 +40,9 @@ export function CameraPanel({ onMouthStateChange, mouthState }: CameraPanelProps
         const det = await faceLandmarksDetection.createDetector(
           faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh,
           {
-            runtime: 'mediapipe',
-            solutionPath: 'https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh',
+            runtime: 'tfjs',
             maxFaces: 1,
-          } as faceLandmarksDetection.MediaPipeFaceMeshMediaPipeModelConfig
+          } as faceLandmarksDetection.MediaPipeFaceMeshTfjsModelConfig
         );
         setDetector(det);
       } catch {
