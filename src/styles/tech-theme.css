@@ -1,0 +1,71 @@
+/* ============================================================
+   Cyber Purple Tech Theme
+   紫色赛博朋克 · 克制精致
+   ============================================================ */
+
+:root {
+  /* ── 核心色彩 ── */
+  --cyber-bg:        #08010F;
+  --cyber-bg-2:      #0D0520;
+  --cyber-surface:   rgba(157, 78, 221, 0.06);
+  --cyber-border:    rgba(157, 78, 221, 0.25);
+  --cyber-border-hi: rgba(199, 125, 255, 0.45);
+  --cyber-primary:   #9D4EDD;
+  --cyber-bright:    #C77DFF;
+  --cyber-deep:      #3C096C;
+  --cyber-grid:      rgba(157, 78, 221, 0.07);
+
+  /* ── 状态色（保留原有） ── */
+  --cyber-idle:      #4D96FF;
+  --cyber-charging:  #FFD93D;
+  --cyber-release:   #6BCB77;
+
+  /* ── 字体 ── */
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+}
+
+/* ============================================================
+   克制动画 Keyframes（仅3个，不过度使用）
+   ============================================================ */
+
+/* 1. 边框/元素脉冲发光 — 2s 循环，opacity 微变 */
+@keyframes cyber-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.55; }
+}
+
+/* 2. 扫描光带 — 单次从上到下，4s，用于 CameraPanel */
+@keyframes cyber-scan {
+  0%   { top: -4px; opacity: 0.7; }
+  15%  { opacity: 0.5; }
+  85%  { opacity: 0.3; }
+  100% { top: 100%;  opacity: 0; }
+}
+
+/* 3. 状态指示点闪烁 — 1.4s step，克制 */
+@keyframes cyber-blink {
+  0%, 60%, 100% { opacity: 1; }
+  30%            { opacity: 0.25; }
+}
+
+/* 4. 流光渐变 — 用于 ResultModal 顶部条 */
+@keyframes cyber-shimmer {
+  0%   { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+
+/* 5. 打字机光标 */
+@keyframes cyber-cursor {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+/* ============================================================
+   全局滚动条美化
+   ============================================================ */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: var(--cyber-bg); }
+::-webkit-scrollbar-thumb {
+  background: var(--cyber-primary);
+  border-radius: 2px;
+}
