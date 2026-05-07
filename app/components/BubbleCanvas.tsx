@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect } from 'react';
 
 interface Bubble {
   id: number;
@@ -7,315 +7,455 @@ interface Bubble {
   radius: number;
   vx: number;
   vy: number;
+  hue: number;
+  hue2: number;
   alpha: number;
-  hue: number; // base hue for iridescent rim
+  // merge animation
+  merging?: boolean;       // this bubble is being absorbed
+  mergeTarget?: number;    // id of target bubble
+  mergeProgress?: number;  // 0→1
 }
 
 interface BubbleCanvasProps {
   isBlowing: boolean;
   mouthOpenness: number;
   duration: number;
-  onBubbleRelease: (size: number, duration: number) => void;
-  gravity: number;
-  wind: number;
-  surfaceTension: number;
+  onBubbleRelease: (count: number, duration: number) => void;
+  onBubbleSpawn?: () => void;
 }
 
+// 5 discrete bubble size tiers (radius in px)
+const BUBBLE_SIZES = [14, 22, 32, 44, 58];
+
 let nextId = 0;
+
+/** Pick a random size tier, weighted toward smaller */
+function randomRadius(): number {
+  const weights = [0.35, 0.28, 0.20, 0.11, 0.06];
+  const r = Math.random();
+  let acc = 0;
+  for (let i = 0; i < weights.length; i++) {
+    acc += weights[i];
+    if (r < acc) return BUBBLE_SIZES[i];
+  }
+  return BUBBLE_SIZES[0];
+}
+
+/** Draw the cyber background: deep gradient + grid + center glow */
+function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number) {
+  // ── Deep space gradient ──────────────────────────────────────────────
+  const bg = ctx.createRadialGradient(W * 0.5, H * 0.5, 0, W * 0.5, H * 0.5, Math.max(W, H) * 0.72);
+  bg.addColorStop(0,   '#0D0520');
+  bg.addColorStop(0.6, '#08010F');
+  bg.addColorStop(1,   '#04000A');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // ── Subtle grid ─────────────────────────────────────────────────────
+  const GRID = 60;
+  ctx.strokeStyle = 'rgba(157, 78, 221, 0.055)';
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  for (let x = 0; x < W; x += GRID) {
+    ctx.moveTo(x, 0); ctx.lineTo(x, H);
+  }
+  for (let y = 0; y < H; y += GRID) {
+    ctx.moveTo(0, y); ctx.lineTo(W, y);
+  }
+  ctx.stroke();
+
+  // ── Center radial glow ───────────────────────────────────────────────
+  const glow = ctx.createRadialGradient(W * 0.5, H * 0.5, 0, W * 0.5, H * 0.5, W * 0.38);
+  glow.addColorStop(0,   'rgba(157, 78, 221, 0.055)');
+  glow.addColorStop(0.5, 'rgba(157, 78, 221, 0.018)');
+  glow.addColorStop(1,   'rgba(157, 78, 221, 0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, W, H);
+
+  // ── Bottom horizon fade ──────────────────────────────────────────────
+  const horizon = ctx.createLinearGradient(0, H * 0.75, 0, H);
+  horizon.addColorStop(0, 'rgba(60, 9, 108, 0)');
+  horizon.addColorStop(1, 'rgba(60, 9, 108, 0.12)');
+  ctx.fillStyle = horizon;
+  ctx.fillRect(0, H * 0.75, W, H * 0.25);
+}
+
+/** Draw a single soap-bubble on a Canvas2D context */
+function drawBubble(ctx: CanvasRenderingContext2D, b: Bubble) {
+  const { x, y, radius, alpha, hue, hue2 } = b;
+  if (radius <= 0 || alpha <= 0) return;
+
+  // Shift hue toward purple range (260-300) for cyber feel
+  const cyberHue  = (hue  % 60) + 260;
+  const cyberHue2 = (hue2 % 60) + 280;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // ── Outer glow ──────────────────────────────────────────────────────
+  ctx.shadowBlur = radius * 0.8;
+  ctx.shadowColor = `hsla(${cyberHue}, 80%, 70%, 0.28)`;
+
+  // ── Transparent body ────────────────────────────────────────────────
+  const body = ctx.createRadialGradient(
+    x - radius * 0.28, y - radius * 0.28, radius * 0.02,
+    x, y, radius,
+  );
+  body.addColorStop(0,    `rgba(200, 170, 255, 0.10)`);
+  body.addColorStop(0.55, `rgba(157,  78, 221, 0.05)`);
+  body.addColorStop(1,    `rgba(100,  30, 180, 0.02)`);
+
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fillStyle = body;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // ── Iridescent rim ──────────────────────────────────────────────────
+  const rimW = Math.max(1.4, radius * 0.048);
+
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.strokeStyle = `hsla(${cyberHue}, 80%, 72%, 0.65)`;
+  ctx.lineWidth = rimW;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(x, y, radius - rimW * 0.55, 0, Math.PI * 2);
+  ctx.strokeStyle = `hsla(${cyberHue2}, 85%, 80%, 0.30)`;
+  ctx.lineWidth = rimW * 0.55;
+  ctx.stroke();
+
+  // ── Primary specular (top-left) ─────────────────────────────────────
+  const hl1 = ctx.createRadialGradient(
+    x - radius * 0.34, y - radius * 0.37, 0,
+    x - radius * 0.34, y - radius * 0.37, radius * 0.30,
+  );
+  hl1.addColorStop(0,   `rgba(255,255,255,0.90)`);
+  hl1.addColorStop(0.5, `rgba(220,200,255,0.28)`);
+  hl1.addColorStop(1,   `rgba(255,255,255,0)`);
+  ctx.beginPath();
+  ctx.arc(x - radius * 0.34, y - radius * 0.37, radius * 0.30, 0, Math.PI * 2);
+  ctx.fillStyle = hl1;
+  ctx.fill();
+
+  // ── Secondary specular (bottom-right) ───────────────────────────────
+  const hl2 = ctx.createRadialGradient(
+    x + radius * 0.40, y + radius * 0.36, 0,
+    x + radius * 0.40, y + radius * 0.36, radius * 0.13,
+  );
+  hl2.addColorStop(0, `rgba(200,180,255,0.40)`);
+  hl2.addColorStop(1, `rgba(255,255,255,0)`);
+  ctx.beginPath();
+  ctx.arc(x + radius * 0.40, y + radius * 0.36, radius * 0.13, 0, Math.PI * 2);
+  ctx.fillStyle = hl2;
+  ctx.fill();
+
+  ctx.restore();
+}
+
+/** Elastic collision between two bubbles — mutates in place */
+function resolveCollision(a: Bubble, b: Bubble) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist === 0) return;
+  const nx = dx / dist;
+  const ny = dy / dist;
+  const dot = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny;
+  if (dot <= 0) return;
+  const imp = dot * 0.80;
+  a.vx -= imp * nx; a.vy -= imp * ny;
+  b.vx += imp * nx; b.vy += imp * ny;
+  // Push apart so they don't overlap
+  const overlap = (a.radius + b.radius - dist) / 2 + 0.5;
+  a.x -= overlap * nx; a.y -= overlap * ny;
+  b.x += overlap * nx; b.y += overlap * ny;
+}
+
+/**
+ * Try to find a spawn position that doesn't overlap existing bubbles.
+ * Returns null if no valid position found after maxTries.
+ */
+function findNonOverlappingPos(
+  existingBubbles: Bubble[],
+  radius: number,
+  W: number,
+  H: number,
+  maxTries = 20,
+): { x: number; y: number } | null {
+  for (let t = 0; t < maxTries; t++) {
+    const x = W * 0.5 + (Math.random() - 0.5) * W * 0.12;
+    const y = H * 0.82 + (Math.random() - 0.5) * H * 0.04;
+    let overlaps = false;
+    for (const b of existingBubbles) {
+      const dx = b.x - x;
+      const dy = b.y - y;
+      const minDist = b.radius + radius + 2;
+      if (dx * dx + dy * dy < minDist * minDist) {
+        overlaps = true;
+        break;
+      }
+    }
+    if (!overlaps) return { x, y };
+  }
+  return null;
+}
+
+/**
+ * Compute merged radius from two bubbles (area-conserving).
+ */
+function mergedRadius(r1: number, r2: number): number {
+  return Math.sqrt(r1 * r1 + r2 * r2);
+}
 
 export function BubbleCanvas({
   isBlowing,
   mouthOpenness,
   duration,
   onBubbleRelease,
-  gravity,
-  wind,
-  surfaceTension,
+  onBubbleSpawn,
 }: BubbleCanvasProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasRef    = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const animationFrameRef = useRef<number>(0);
+  const rafRef       = useRef<number>(0);
 
-  // All state lives in refs so the animation loop always sees fresh values
-  const bubblesRef = useRef<Bubble[]>([]);
-  const activeBubbleRef = useRef<Bubble | null>(null);
-  const isBlowingRef = useRef(false);
-  const mouthOpennessRef = useRef(0);
-  const durationRef = useRef(0);
-  const gravityRef = useRef(gravity);
-  const windRef = useRef(wind);
-  const surfaceTensionRef = useRef(surfaceTension);
-  const onBubbleReleaseRef = useRef(onBubbleRelease);
-  const lastSpawnRef = useRef(0); // timestamp of last auto-spawn
+  const bubblesRef       = useRef<Bubble[]>([]);
+  const isBlowingRef     = useRef(false);
+  const mouthOpenRef     = useRef(0);
+  const durationRef      = useRef(0);
+  const onReleaseRef     = useRef(onBubbleRelease);
+  const onSpawnRef       = useRef(onBubbleSpawn);
+  const lastSpawnRef     = useRef(0);
+  const spawnIntervalRef = useRef(400);
+  const blowCountRef     = useRef(0);
+  const wasBlowingRef    = useRef(false);
 
-  // Keep refs in sync with props
+  // Merge event tracking: timestamp of last merge trigger
+  const lastMergeTriggerRef = useRef(0);
+  // How many merge groups have fired in the current 5s cycle
+  const mergeGroupsFiredRef = useRef(0);
+
   useEffect(() => { isBlowingRef.current = isBlowing; }, [isBlowing]);
-  useEffect(() => { mouthOpennessRef.current = mouthOpenness; }, [mouthOpenness]);
+  useEffect(() => { mouthOpenRef.current = mouthOpenness; }, [mouthOpenness]);
   useEffect(() => { durationRef.current = duration; }, [duration]);
-  useEffect(() => { gravityRef.current = gravity; }, [gravity]);
-  useEffect(() => { windRef.current = wind; }, [wind]);
-  useEffect(() => { surfaceTensionRef.current = surfaceTension; }, [surfaceTension]);
-  useEffect(() => { onBubbleReleaseRef.current = onBubbleRelease; }, [onBubbleRelease]);
+  useEffect(() => { onReleaseRef.current = onBubbleRelease; }, [onBubbleRelease]);
+  useEffect(() => { onSpawnRef.current = onBubbleSpawn; }, [onBubbleSpawn]);
 
-  // Handle blow start / stop via isBlowing prop changes
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    if (isBlowing) {
-      // Start a new active bubble if none exists
-      if (!activeBubbleRef.current) {
-        activeBubbleRef.current = {
-          id: nextId++,
-          x: canvas.width / 2,
-          y: canvas.height * 0.55,
-          radius: 12,
-          vx: 0,
-          vy: 0,
-          alpha: 0.9,
-          hue: Math.random() * 360,
-        };
-        lastSpawnRef.current = performance.now();
-      }
-    } else {
-      // Release active bubble
-      if (activeBubbleRef.current) {
-        const b = activeBubbleRef.current;
-        const released: Bubble = {
-          ...b,
-          vy: -1.8 - b.radius / 60,
-          vx: (Math.random() - 0.5) * 1.5,
-        };
-        bubblesRef.current = [...bubblesRef.current, released];
-        onBubbleReleaseRef.current(b.radius, durationRef.current);
-        activeBubbleRef.current = null;
-      }
+    if (!isBlowing && wasBlowingRef.current && blowCountRef.current > 0) {
+      const count = blowCountRef.current;
+      const dur   = durationRef.current;
+      setTimeout(() => onReleaseRef.current(count, dur), 600);
+      blowCountRef.current = 0;
     }
+    wasBlowingRef.current = isBlowing;
   }, [isBlowing]);
 
-  // Draw a single bubble with realistic soap-bubble look
-  const drawBubble = useCallback((ctx: CanvasRenderingContext2D, b: Bubble) => {
-    const { x, y, radius, alpha, hue } = b;
-
-    ctx.save();
-
-    // Outer soft glow
-    ctx.shadowBlur = radius * 0.6;
-    ctx.shadowColor = `hsla(${hue}, 60%, 80%, ${alpha * 0.25})`;
-
-    // Transparent body — very subtle fill
-    const bodyGrad = ctx.createRadialGradient(
-      x - radius * 0.25, y - radius * 0.25, radius * 0.02,
-      x, y, radius
-    );
-    bodyGrad.addColorStop(0,   `rgba(240, 248, 255, ${alpha * 0.07})`);
-    bodyGrad.addColorStop(0.6, `rgba(200, 220, 255, ${alpha * 0.04})`);
-    bodyGrad.addColorStop(1,   `rgba(160, 190, 255, ${alpha * 0.02})`);
-
-    ctx.beginPath();
-    ctx.arc(x, y, radius, 0, Math.PI * 2);
-    ctx.fillStyle = bodyGrad;
-    ctx.fill();
-
-    ctx.shadowBlur = 0;
-
-    // Iridescent rim — two overlapping strokes with offset hues
-    const rimWidth = Math.max(1.2, radius * 0.045);
-
-    ctx.beginPath();
-    ctx.arc(x, y, radius, 0, Math.PI * 2);
-    ctx.strokeStyle = `hsla(${hue}, 75%, 72%, ${alpha * 0.55})`;
-    ctx.lineWidth = rimWidth;
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.arc(x, y, radius - rimWidth * 0.5, 0, Math.PI * 2);
-    ctx.strokeStyle = `hsla(${(hue + 80) % 360}, 80%, 78%, ${alpha * 0.3})`;
-    ctx.lineWidth = rimWidth * 0.6;
-    ctx.stroke();
-
-    // Primary specular highlight — top-left
-    const hl1 = ctx.createRadialGradient(
-      x - radius * 0.35, y - radius * 0.38, 0,
-      x - radius * 0.35, y - radius * 0.38, radius * 0.32
-    );
-    hl1.addColorStop(0, `rgba(255, 255, 255, ${alpha * 0.82})`);
-    hl1.addColorStop(0.5, `rgba(255, 255, 255, ${alpha * 0.25})`);
-    hl1.addColorStop(1, 'rgba(255, 255, 255, 0)');
-
-    ctx.beginPath();
-    ctx.arc(x - radius * 0.35, y - radius * 0.38, radius * 0.32, 0, Math.PI * 2);
-    ctx.fillStyle = hl1;
-    ctx.fill();
-
-    // Secondary specular — bottom-right, smaller and dimmer
-    const hl2 = ctx.createRadialGradient(
-      x + radius * 0.42, y + radius * 0.38, 0,
-      x + radius * 0.42, y + radius * 0.38, radius * 0.14
-    );
-    hl2.addColorStop(0, `rgba(255, 255, 255, ${alpha * 0.35})`);
-    hl2.addColorStop(1, 'rgba(255, 255, 255, 0)');
-
-    ctx.beginPath();
-    ctx.arc(x + radius * 0.42, y + radius * 0.38, radius * 0.14, 0, Math.PI * 2);
-    ctx.fillStyle = hl2;
-    ctx.fill();
-
-    ctx.restore();
-  }, []);
-
-  // Elastic collision between two bubbles (modifies in place)
-  const resolveCollision = (a: Bubble, b: Bubble) => {
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist === 0) return;
-
-    // Normalised collision axis
-    const nx = dx / dist;
-    const ny = dy / dist;
-
-    // Relative velocity along collision axis
-    const dvx = a.vx - b.vx;
-    const dvy = a.vy - b.vy;
-    const dot = dvx * nx + dvy * ny;
-
-    // Only resolve if approaching
-    if (dot <= 0) return;
-
-    // Simple equal-mass elastic: swap velocity components along normal
-    const impulse = dot * 0.85; // slight energy loss
-    a.vx -= impulse * nx;
-    a.vy -= impulse * ny;
-    b.vx += impulse * nx;
-    b.vy += impulse * ny;
-
-    // Separate overlapping bubbles
-    const overlap = (a.radius + b.radius - dist) / 2;
-    a.x -= overlap * nx;
-    a.y -= overlap * ny;
-    b.x += overlap * nx;
-    b.y += overlap * ny;
+  /** Spawn one bubble near the mouth area (bottom-center of canvas) */
+  const spawnBubble = (canvas: HTMLCanvasElement) => {
+    const W = canvas.width;
+    const H = canvas.height;
+    const radius = randomRadius();
+    const pos = findNonOverlappingPos(bubblesRef.current, radius, W, H);
+    if (!pos) return; // skip if no room
+    const hue = Math.random() * 360;
+    const bubble: Bubble = {
+      id: nextId++,
+      x: pos.x,
+      y: pos.y,
+      radius,
+      vx: (Math.random() - 0.5) * 1.2,
+      vy: -(0.6 + Math.random() * 0.8),
+      hue,
+      hue2: (hue + 80 + Math.random() * 60) % 360,
+      alpha: 0.92,
+    };
+    bubblesRef.current = [...bubblesRef.current, bubble];
+    blowCountRef.current += 1;
+    // 实时通知外部每次 spawn
+    onSpawnRef.current?.();
   };
 
-  // Main animation loop — runs once, reads from refs
+  /**
+   * Trigger one merge group: pick 2 adjacent (close) bubbles and animate them merging.
+   * Returns true if a pair was found and marked.
+   */
+  const triggerMergeGroup = (): boolean => {
+    const bubbles = bubblesRef.current.filter(b => !b.merging);
+    if (bubbles.length < 2) return false;
+
+    // Find the closest pair
+    let bestDist = Infinity;
+    let bestI = -1, bestJ = -1;
+    for (let i = 0; i < bubbles.length; i++) {
+      for (let j = i + 1; j < bubbles.length; j++) {
+        const dx = bubbles[i].x - bubbles[j].x;
+        const dy = bubbles[i].y - bubbles[j].y;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < bestDist) {
+          bestDist = d;
+          bestI = i;
+          bestJ = j;
+        }
+      }
+    }
+    if (bestI < 0) return false;
+
+    const a = bubbles[bestI];
+    const b = bubbles[bestJ];
+
+    // Mark the smaller one as merging into the larger one
+    const [absorb, target] = a.radius <= b.radius ? [a, b] : [b, a];
+    absorb.merging = true;
+    absorb.mergeTarget = target.id;
+    absorb.mergeProgress = 0;
+    return true;
+  };
+
+  // Main animation loop
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const canvas    = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     const animate = (now: number) => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      const g = gravityRef.current;
-      const w = windRef.current;
-      const st = surfaceTensionRef.current;
       const W = canvas.width;
       const H = canvas.height;
 
-      // ── Active bubble ──────────────────────────────────────────────
-      if (activeBubbleRef.current && isBlowingRef.current) {
-        const ab = activeBubbleRef.current;
-        const growthRate = 0.6 + mouthOpennessRef.current * 1.8;
-        const maxRadius = 80 + st * 80; // 80–160px depending on surface tension
-        ab.radius = Math.min(ab.radius + growthRate, maxRadius);
-        // Subtle jitter while blowing
-        ab.x += (Math.random() - 0.5) * 0.5;
-        ab.y += (Math.random() - 0.5) * 0.5;
-        ab.hue = (ab.hue + 0.5) % 360;
+      ctx.clearRect(0, 0, W, H);
+      drawBackground(ctx, W, H);
 
-        drawBubble(ctx, ab);
+      // ── Spawn bubbles while blowing ──────────────────────────────────
+      if (isBlowingRef.current) {
+        const openness = Math.max(0.1, mouthOpenRef.current);
+        spawnIntervalRef.current = Math.max(120, 500 - openness * 1200);
 
-        // Auto-spawn a small satellite bubble every 1.8s while blowing
-        if (now - lastSpawnRef.current > 1800 && ab.radius > 20) {
-          const angle = Math.random() * Math.PI * 2;
-          const spawnR = 6 + Math.random() * 14;
-          const satellite: Bubble = {
-            id: nextId++,
-            x: ab.x + (ab.radius + spawnR + 2) * Math.cos(angle),
-            y: ab.y + (ab.radius + spawnR + 2) * Math.sin(angle),
-            radius: spawnR,
-            vx: (Math.random() - 0.5) * 2.5,
-            vy: -1 - Math.random() * 1.5,
-            alpha: 0.85,
-            hue: (ab.hue + 120 + Math.random() * 60) % 360,
-          };
-          bubblesRef.current = [...bubblesRef.current, satellite];
+        if (now - lastSpawnRef.current > spawnIntervalRef.current) {
+          spawnBubble(canvas);
           lastSpawnRef.current = now;
         }
       }
 
-      // ── Floating bubbles ───────────────────────────────────────────
-      let updated = bubblesRef.current.map((b) => {
-        let { x, y, vx, vy, alpha, radius, hue } = b;
+      // ── Every 5 s: trigger 3 merge groups (staggered 0 / 300 / 600 ms) ──
+      const timeSinceLastCycle = now - lastMergeTriggerRef.current;
+      if (timeSinceLastCycle >= 5000) {
+        lastMergeTriggerRef.current = now;
+        mergeGroupsFiredRef.current = 0;
+      }
+      // Fire group 0 at t+0, group 1 at t+300, group 2 at t+600
+      const groupOffsets = [0, 300, 600];
+      for (let g = mergeGroupsFiredRef.current; g < 3; g++) {
+        if (timeSinceLastCycle >= groupOffsets[g]) {
+          triggerMergeGroup();
+          mergeGroupsFiredRef.current = g + 1;
+        } else {
+          break;
+        }
+      }
 
-        // Physics
-        vy -= g * 0.04;          // buoyancy (upward)
-        vy += 0.015;              // tiny gravity pull
-        vx += w * 0.03;          // wind
-        vx *= 0.999;              // drag
-        vy *= 0.999;
+      // ── Physics update ───────────────────────────────────────────────
+      let bubbles = bubblesRef.current;
+      const toRemove = new Set<number>();
 
-        x += vx;
-        y += vy;
-        hue = (hue + 0.3) % 360;
+      for (const b of bubbles) {
+        // ── Merge animation ──────────────────────────────────────────
+        if (b.merging && b.mergeTarget !== undefined) {
+          b.mergeProgress = (b.mergeProgress ?? 0) + 0.025; // ~40 frames = ~0.67s
+          const target = bubbles.find(t => t.id === b.mergeTarget);
+          if (target && b.mergeProgress < 1) {
+            // Move absorbing bubble toward target
+            b.x += (target.x - b.x) * 0.08;
+            b.y += (target.y - b.y) * 0.08;
+            // Shrink absorbing bubble
+            b.radius = b.radius * (1 - b.mergeProgress * 0.03);
+            b.alpha  = Math.max(0, 1 - b.mergeProgress);
+          } else if (b.mergeProgress >= 1) {
+            // Merge complete: grow target, remove absorbing bubble
+            if (target) {
+              target.radius = mergedRadius(target.radius, b.radius);
+              // Cap at a reasonable max
+              if (target.radius > 90) target.radius = 90;
+            }
+            toRemove.add(b.id);
+            continue;
+          }
+          // Skip normal physics for merging bubbles (they just glide toward target)
+          continue;
+        }
 
-        // Boundary bounce
-        if (x - radius < 0)  { x = radius;      vx = Math.abs(vx) * 0.8; }
-        if (x + radius > W)  { x = W - radius;  vx = -Math.abs(vx) * 0.8; }
-        if (y - radius < 0)  { y = radius;      vy = Math.abs(vy) * 0.8; }
-        if (y + radius > H)  { y = H - radius;  vy = -Math.abs(vy) * 0.8; }
+        // Normal physics
+        b.vy -= 0.008;
+        b.vy += 0.003;
+        b.vx += (Math.random() - 0.5) * 0.012;
+        b.vx *= 0.998;
+        b.vy *= 0.998;
 
-        // Alpha decay — larger bubbles last longer
-        const decayRate = 0.0008 + 0.002 * (12 / Math.max(radius, 12));
-        alpha -= decayRate;
+        const speed = Math.sqrt(b.vx * b.vx + b.vy * b.vy);
+        if (speed > 2.5) { b.vx = (b.vx / speed) * 2.5; b.vy = (b.vy / speed) * 2.5; }
 
-        return { ...b, x, y, vx, vy, alpha, hue };
-      }).filter((b) => b.alpha > 0);
+        b.x += b.vx;
+        b.y += b.vy;
+        b.hue  = (b.hue  + 0.25) % 360;
+        b.hue2 = (b.hue2 + 0.18) % 360;
 
-      // Collision detection — O(n²), acceptable for <100 bubbles
-      for (let i = 0; i < updated.length; i++) {
-        for (let j = i + 1; j < updated.length; j++) {
-          const a = updated[i];
-          const bub = updated[j];
-          const dx = bub.x - a.x;
-          const dy = bub.y - a.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist < a.radius + bub.radius) {
-            resolveCollision(a, bub);
+        if (b.x - b.radius < 0)  { b.x = b.radius;      b.vx =  Math.abs(b.vx) * 0.8; }
+        if (b.x + b.radius > W)  { b.x = W - b.radius;  b.vx = -Math.abs(b.vx) * 0.8; }
+        if (b.y - b.radius < 0)  { b.y = b.radius;      b.vy =  Math.abs(b.vy) * 0.8; }
+        if (b.y + b.radius > H)  { b.y = H - b.radius;  b.vy = -Math.abs(b.vy) * 0.8; }
+      }
+
+      // Remove merged-away bubbles
+      if (toRemove.size > 0) {
+        bubbles = bubbles.filter(b => !toRemove.has(b.id));
+        bubblesRef.current = bubbles;
+      }
+
+      // ── Collision detection — only non-merging bubbles ───────────────
+      const active = bubbles.filter(b => !b.merging);
+      const n = active.length;
+      const limit = Math.min(n, 80);
+      for (let i = 0; i < limit; i++) {
+        for (let j = i + 1; j < limit; j++) {
+          const a = active[i], bb = active[j];
+          const dx = bb.x - a.x, dy = bb.y - a.y;
+          if (dx * dx + dy * dy < (a.radius + bb.radius) ** 2) {
+            resolveCollision(a, bb);
           }
         }
       }
 
-      updated.forEach((b) => drawBubble(ctx, b));
-      bubblesRef.current = updated;
+      // ── Draw all bubbles ─────────────────────────────────────────────
+      for (const b of bubbles) {
+        drawBubble(ctx, b);
+      }
 
-      animationFrameRef.current = requestAnimationFrame(animate);
+      rafRef.current = requestAnimationFrame(animate);
     };
 
-    animationFrameRef.current = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(animationFrameRef.current);
-  }, [drawBubble]); // only re-run if drawBubble changes (never)
+    rafRef.current = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, []);
 
   // Resize canvas to match container
   useEffect(() => {
     const container = containerRef.current;
-    const canvas = canvasRef.current;
+    const canvas    = canvasRef.current;
     if (!container || !canvas) return;
 
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const { width, height } = entry.contentRect;
-        canvas.width = Math.floor(width);
-        canvas.height = Math.floor(height);
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) {
+        canvas.width  = Math.floor(e.contentRect.width);
+        canvas.height = Math.floor(e.contentRect.height);
       }
     });
-
-    observer.observe(container);
-    canvas.width = container.clientWidth;
+    ro.observe(container);
+    canvas.width  = container.clientWidth;
     canvas.height = container.clientHeight;
-    return () => observer.disconnect();
+    return () => ro.disconnect();
   }, []);
 
   return (
