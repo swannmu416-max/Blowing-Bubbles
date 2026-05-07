@@ -1,5 +1,0 @@
-/* Reuse all shared styles from the desktop entry */
-@import '../../src/styles/index.css';
-
-/* Mobile-specific overrides (touch, safe-area, sizing) */
-@import './mobile.css';
